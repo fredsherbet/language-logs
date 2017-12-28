@@ -111,25 +111,25 @@ Non-ascii filenames:
 
     def format_lang_table(self):
         return "  \n".join(
-                "{:>5}  {}".format(self.format_bytes(s), l)
+                "{:>7}  {}".format(self.format_bytes(s), l)
                 for (l, s) in Counter(self.lang_amounts).most_common(5))
 
     @staticmethod
     def format_bytes(num_bytes):
         res = float(num_bytes)
-        suffix = ['T', 'G', 'M', 'K', 'B']
+        suffix = ['TB', 'GB', 'MB', 'KB', 'B']
         while res >= 1000:
             suffix.pop()
             res = res / 1024
         if res >= 100:
-            fmt = "{:.0f}{}"
+            fmt = "{:.0f}{:>3}"
         else:
-            fmt = "{:.1f}{}"
+            fmt = "{:.1f}{:>3}"
         return fmt.format(res, suffix.pop())
 
     def format_success(self):
-        return "{:>5}%     ({:d} of {:d})".format(
-                self.successful_request_count * 100 / self.total_request_count,
+        return "{:.1f}%  ({:d} of {:d})".format(
+                float(self.successful_request_count) * 100 / self.total_request_count,
                 self.successful_request_count, self.total_request_count)
 
     def add_log(self, apache_log):
@@ -220,5 +220,4 @@ if __name__ == '__main__':
         logging.exception("Error halted execution")
         print "Report failed. See debugging information in " + LOG_FILE
         sys.exit(1)
-
 
