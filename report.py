@@ -1,8 +1,22 @@
 #!/usr/bin/python
 
+import logging
 import sys
 import shlex
 from collections import Counter
+
+
+log = logging.getLogger(__name__)
+log.setLevel(logging.INFO)
+LOG_FILE = "stdout"
+
+
+class ReportException(Exception):
+    """Exception raised within report.py, with a printable error message"""
+    def __init__(self, message, log_line=None, exc=None):
+        Exception.__init__(self, message)
+        self.log_line = log_line
+        self.exc = exc
 
 
 class ApacheLogLine():
@@ -23,11 +37,11 @@ class ApacheLogLine():
         # There's one wrinkle; the timestamp has spaces, and isn't
         # wrapped in quotes (it's wrapped in square brackets instead),
         # so we'll normalise that, here.
+        self.log_line = log_line
         self.parts = shlex.split(log_line)
         self.parts[3] += ' %s' % self.parts[4]
         del self.parts[4]
-        assert self.parts[3].startswith('[')
-        assert self.parts[3].endswith(']')
+        self.do_consistency_check()
 
     def __str__(self):
         return "AccessLogLine: " + " ".join(self.parts)
@@ -38,9 +52,26 @@ class ApacheLogLine():
         except KeyError:
             raise AttributeError("%s has no %s" % (self, name))
 
+    def do_consistency_check(self):
+        """Just some basic checking - we'll rely on exceptions for most
+        issues, rather than trying to preempt every possibility"""
+        if not (self.parts[3].startswith('[') and self.parts[3].endswith(']')):
+            raise ReportException("Malformatted log line; expected this part "
+                                  "to be a date: %s" % self.parts[3],
+                                  log_line=self.log_line)
+        if not len(self.parts) != 7:
+            raise ReportException("Malformatted log line; expected 7 parts, "
+                                  "but got %d" % len(self.parts),
+                                  log_line=self.log_line)
+
     @property
     def path(self):
-        return self.request.split()[1].split('?', 1)[0]
+        try:
+            return self.request.split()[1].split('?', 1)[0]
+        except:
+            log.warning("Log line has no path. %s" % self.log_line,
+                        exc_info=True)
+            return ""
 
     @property
     def is_successful_request(self):
@@ -53,22 +84,28 @@ def get_report(log_file):
     total_request_count = 0
     successful_request_count = 0
 
-    apache_regex = '([(\d\.)]+) - - \[([^\]]*)\] "([^"]*)" (\d+) - "(.*?)" "(.*?)"'
-
     for log_line in log_file.readlines():
-        log = ApacheLogLine(log_line)
-
-        non_ascii_file = get_non_ascii_file(log.path)
-        total_request_count += 1
-        if non_ascii_file:
-            non_ascii_names.append(non_ascii_file)
-        if not log.is_successful_request:
-            continue
-        successful_request_count += 1
         try:
-            lang_amounts[get_lang(log.path)] += int(log.bytes)
-        except KeyError:
-            lang_amounts[get_lang(log.path)] = int(log.bytes)
+            log.debug("Handling line %s" % log_line)
+            apache_log = ApacheLogLine(log_line)
+
+            non_ascii_file = get_non_ascii_file(apache_log.path)
+            total_request_count += 1
+            if non_ascii_file:
+                non_ascii_names.append(non_ascii_file)
+            if not apache_log.is_successful_request:
+                continue
+            successful_request_count += 1
+            try:
+                lang_amounts[get_lang(apache_log.path)] += int(apache_log.bytes)
+            except KeyError:
+                lang_amounts[get_lang(apache_log.path)] = int(apache_log.bytes)
+        except ReportException as exc:
+            exc.log_line = log_line
+            raise
+        except Exception as exc:
+            logging.exception("Exception handling line: %s" % log_line)
+            raise ReportException(exc.message, log_line, exc)
 
     return format_report(lang_amounts,
                          successful_request_count,
@@ -124,6 +161,15 @@ def format_success(succ, total):
 
 
 if __name__ == '__main__':
-    print get_report(sys.stdin)
+    try:
+        print get_report(sys.stdin)
+    except ReportException as exc:
+        logging.exception("Error halted execution")
+        print exc.message
+        sys.exit(1)
+    except:
+        logging.exception("Error halted execution")
+        print "Report failed. See debugging information in %s" % LOG_FILE
+        sys.exit(1)
 
 
