@@ -10,7 +10,6 @@ from collections import Counter
 
 log = logging.getLogger(__name__)
 log.setLevel(logging.INFO)
-LOG_FILE = "stdout"
 
 
 class ReportException(Exception):
@@ -111,8 +110,22 @@ Non-ascii filenames:
                            'non-ascii': "\n  ".join(self.non_ascii_names)})
 
     def format_lang_table(self):
-        # @TODO format as a table, with "human" sizes
-        return str(dict(Counter(self.lang_amounts).most_common(5)))
+        return "  \n".join(
+                "{:>5}  {}".format(self.format_bytes(s), l)
+                for (l, s) in Counter(self.lang_amounts).most_common(5))
+
+    @staticmethod
+    def format_bytes(num_bytes):
+        res = float(num_bytes)
+        suffix = ['T', 'G', 'M', 'K', 'B']
+        while res >= 1000:
+            suffix.pop()
+            res = res / 1024
+        if res >= 100:
+            fmt = "{:.0f}{}"
+        else:
+            fmt = "{:.1f}{}"
+        return fmt.format(res, suffix.pop())
 
     def format_success(self):
         return "{:>5}%     ({:d} of {:d})".format(
@@ -186,6 +199,10 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     # @TODO by default, send logs to a file
+    LOG_FILE = "engineering.log"
+    logging.basicConfig(level=logging.INFO,
+                        filename=LOG_FILE,
+                        filemode="w")
 
     try:
         if args.input:
