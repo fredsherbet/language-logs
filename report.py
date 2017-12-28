@@ -2,6 +2,7 @@
 
 import logging
 import sys
+import argparse
 import shlex
 from collections import Counter
 
@@ -161,8 +162,17 @@ def format_success(succ, total):
 
 
 if __name__ == '__main__':
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-i", "--input", help="Apache log to parse")
+    args = parser.parse_args()
+
     try:
-        print get_report(sys.stdin)
+        if args.input:
+            with open(args.input) as f:
+                print get_report(f)
+        else:
+            print get_report(sys.stdin)
     except ReportException as exc:
         logging.exception("Error halted execution")
         print exc.message
