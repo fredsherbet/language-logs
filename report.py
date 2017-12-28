@@ -3,6 +3,7 @@
 import logging
 import sys
 import argparse
+import datetime
 import shlex
 from collections import Counter
 
@@ -40,9 +41,9 @@ class ApacheLogLine():
         # so we'll normalise that, here.
         self.log_line = log_line
         self.parts = shlex.split(log_line)
-        self.parts[3] += ' %s' % self.parts[4]
+        self.parts[3] += ' ' + self.parts[4]
         del self.parts[4]
-        self.do_consistency_check()
+        self.parts[3] = self.parts[3].strip('[]')
 
     def __str__(self):
         return "AccessLogLine: " + " ".join(self.parts)
@@ -51,26 +52,14 @@ class ApacheLogLine():
         try:
             return self.parts[self.NAME_MAP[name]]
         except KeyError:
-            raise AttributeError("%s has no %s" % (self, name))
-
-    def do_consistency_check(self):
-        """Just some basic checking - we'll rely on exceptions for most
-        issues, rather than trying to preempt every possibility"""
-        if not (self.parts[3].startswith('[') and self.parts[3].endswith(']')):
-            raise ReportException("Malformatted log line; expected this part "
-                                  "to be a date: %s" % self.parts[3],
-                                  log_line=self.log_line)
-        if not len(self.parts) != 7:
-            raise ReportException("Malformatted log line; expected 7 parts, "
-                                  "but got %d" % len(self.parts),
-                                  log_line=self.log_line)
+            raise AttributeError("{0} has no {1}".format(self, name))
 
     @property
     def path(self):
         try:
             return self.request.split()[1].split('?', 1)[0]
         except:
-            log.warning("Log line has no path. %s" % self.log_line,
+            log.warning("Log line has no path. " + self.log_line,
                         exc_info=True)
             return ""
 
@@ -78,40 +67,96 @@ class ApacheLogLine():
     def is_successful_request(self):
         return self.status.startswith('2')
 
-
-def get_report(log_file):
-    lang_amounts = {}
-    non_ascii_names = []
-    total_request_count = 0
-    successful_request_count = 0
-
-    for log_line in log_file.readlines():
-        try:
-            log.debug("Handling line %s" % log_line)
-            apache_log = ApacheLogLine(log_line)
-
-            non_ascii_file = get_non_ascii_file(apache_log.path)
-            total_request_count += 1
-            if non_ascii_file:
-                non_ascii_names.append(non_ascii_file)
-            if not apache_log.is_successful_request:
-                continue
-            successful_request_count += 1
+    @property
+    def datetime(self):
+        formats = ['%d/%m/%Y:%H:%M:%S',
+                   '%d/%b/%Y:%H:%M:%S',
+                  ]
+        for fmt in formats:
             try:
-                lang_amounts[get_lang(apache_log.path)] += int(apache_log.bytes)
-            except KeyError:
-                lang_amounts[get_lang(apache_log.path)] = int(apache_log.bytes)
+                return datetime.datetime.strptime(self.time.split()[0], fmt)
+            except ValueError as exc:
+                pass
+        raise ReportException("Could not parse date " + self.time,
+                              log_line=self.log_line)
+
+    @property
+    def month_year(self):
+        return self.datetime.strftime('%B %Y')
+
+
+class Report():
+    """Stores data for a report, and formats it"""
+    def __init__(self, title):
+        log.info("Start new report " + title)
+        self.title = title
+        self.lang_amounts = {}
+        self.non_ascii_names = []
+        self.total_request_count = 0
+        self.successful_request_count = 0
+
+    def __str__(self):
+        return """
+{title} Report
+Top 5 Languages:
+{lang}
+
+Request Success:
+  {succ}
+
+Non-ascii filenames:
+  {non-ascii}""".format(**{'title': self.title,
+                           'lang': self.format_lang_table(),
+                           'succ': self.format_success(),
+                           'non-ascii': "\n  ".join(self.non_ascii_names)})
+
+    def format_lang_table(self):
+        # @TODO format as a table, with "human" sizes
+        return str(dict(Counter(self.lang_amounts).most_common(5)))
+
+    def format_success(self):
+        return "{:>5}%     ({:d} of {:d})".format(
+                self.successful_request_count * 100 / self.total_request_count,
+                self.successful_request_count, self.total_request_count)
+
+    def add_log(self, apache_log):
+        non_ascii_file = get_non_ascii_file(apache_log.path)
+        self.total_request_count += 1
+        if non_ascii_file:
+            self.non_ascii_names.append(non_ascii_file)
+        if not apache_log.is_successful_request:
+            return
+        self.successful_request_count += 1
+        try:
+            self.lang_amounts[get_lang(apache_log.path)] += int(apache_log.bytes)
+        except KeyError:
+            self.lang_amounts[get_lang(apache_log.path)] = int(apache_log.bytes)
+
+
+def get_full_report(log_file):
+    report_str = ''
+    report = None
+    for log_line in log_file.readlines():
+        log.debug("Handling line " + log_line)
+        apache_log = ApacheLogLine(log_line)
+        if report is None:
+            report = Report(apache_log.month_year)
+        if apache_log.month_year != report.title:
+            log.info("Formatting report " + report.title)
+            report_str += '\n' + str(report)
+            report = Report(apache_log.month_year)
+        try:
+            report.add_log(apache_log)
         except ReportException as exc:
             exc.log_line = log_line
             raise
         except Exception as exc:
-            logging.exception("Exception handling line: %s" % log_line)
+            logging.exception("Exception handling line: " + log_line)
             raise ReportException(exc.message, log_line, exc)
 
-    return format_report(lang_amounts,
-                         successful_request_count,
-                         total_request_count,
-                         non_ascii_names)
+    if report is not None:
+        report_str += '\n' + str(report)
+    return report_str.strip()
 
 
 def get_non_ascii_file(path):
@@ -134,52 +179,29 @@ def get_lang(path):
     return path_parts[1]
 
 
-def format_report(lang_amounts, successful_request_count,
-                  total_request_count, non_ascii_names):
-    return """
-{date} Report
-Top 5 Languages:
-{lang}
-
-Request Success:
-  {succ}
-
-Non-ascii filenames:
-  {non-ascii}""".format(**{'lang': format_lang_table(lang_amounts),
-                           'date': '2017',
-                           'succ': format_success(successful_request_count,
-                                                  total_request_count),
-                           'non-ascii': "\n  ".join(non_ascii_names)})
-
-
-def format_lang_table(lang_amounts):
-    return "%s" % dict(Counter(lang_amounts).most_common(5))
-
-
-def format_success(succ, total):
-    return "{:>5}%%     ({:d} of {:d})".format(succ * 100 / total,
-                                               succ, total)
-
-
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--input", help="Apache log to parse")
     args = parser.parse_args()
 
+    # @TODO by default, send logs to a file
+
     try:
         if args.input:
             with open(args.input) as f:
-                print get_report(f)
+                print get_full_report(f)
         else:
-            print get_report(sys.stdin)
+            print get_full_report(sys.stdin)
     except ReportException as exc:
         logging.exception("Error halted execution")
         print exc.message
+        if exc.log_line:
+            print 'Error handling log line:\n  ' + exc.log_line
         sys.exit(1)
     except:
         logging.exception("Error halted execution")
-        print "Report failed. See debugging information in %s" % LOG_FILE
+        print "Report failed. See debugging information in " + LOG_FILE
         sys.exit(1)
 
 
