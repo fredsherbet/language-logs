@@ -2,6 +2,7 @@
 
 import logging
 import sys
+import os
 import argparse
 import datetime
 import shlex
@@ -180,26 +181,35 @@ Non-ascii filenames:
         return path_parts[1]
 
 
-def get_full_report(log_file):
+def get_full_report(log_file=None, file_paths=None):
+    def get_files():
+        if log_file:
+            yield log_file
+        if file_paths:
+            for p in file_paths:
+                with open(p) as f:
+                    yield f
+
     report_str = ''
     report = None
-    for log_line in log_file.readlines():
-        log.debug("Handling line " + log_line)
-        apache_log = ApacheLogLine(log_line)
-        if report is None:
-            report = Report(apache_log.month_year)
-        if apache_log.month_year != report.title:
-            log.info("Formatting report " + report.title)
-            report_str += '\n' + str(report)
-            report = Report(apache_log.month_year)
-        try:
-            report.add_log(apache_log)
-        except ReportException as exc:
-            exc.log_line = log_line
-            raise
-        except Exception:
-            logging.exception("Exception handling line: " + log_line)
-            raise
+    for f in get_files():
+        for log_line in f.readlines():
+            log.debug("Handling line " + log_line)
+            apache_log = ApacheLogLine(log_line)
+            if report is None:
+                report = Report(apache_log.month_year)
+            if apache_log.month_year != report.title:
+                log.info("Formatting report " + report.title)
+                report_str += '\n' + str(report)
+                report = Report(apache_log.month_year)
+            try:
+                report.add_log(apache_log)
+            except ReportException as exc:
+                exc.log_line = log_line
+                raise
+            except Exception:
+                logging.exception("Exception handling line: " + log_line)
+                raise
 
     if report is not None:
         report_str += '\n' + str(report)
@@ -208,15 +218,11 @@ def get_full_report(log_file):
 
 if __name__ == '__main__':
 
-    # @TODO Briefing:
-    # The script should take a directory as a command line argument and
-    # assume all files within that directory are log files (you may assume
-    # there are no subdirectories).  The Apache Common Log Format is used in
-    # these log files.
     parser = argparse.ArgumentParser(
             description="Produce monthly reports for language server from its "
                         "Apache HTTP logs")
     parser.add_argument("-i", "--input", help="Apache HTTP log to parse")
+    parser.add_argument("-f", "--folder", help="Folder of Apache HTTP log to parse")
     args = parser.parse_args()
 
     LOG_FILE = "engineering.log"
@@ -225,7 +231,11 @@ if __name__ == '__main__':
                         filemode="w")
 
     try:
-        if args.input:
+        if args.folder:
+            print get_full_report(
+                    file_paths=sorted(os.path.join(args.folder, f)
+                                      for f in os.listdir(args.folder)))
+        elif args.input:
             with open(args.input) as f:
                 print get_full_report(f)
         else:

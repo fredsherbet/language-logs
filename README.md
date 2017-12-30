@@ -4,7 +4,7 @@
 
 ## Usage
 
-    usage: report.py [-h] [-i INPUT]
+    usage: report.py [-h] [-i INPUT] [-f FOLDER]
 
     Produce monthly reports for language server from its Apache HTTP logs
 
@@ -12,6 +12,8 @@
       -h, --help            show this help message and exit
       -i INPUT, --input INPUT
                             Apache HTTP log to parse
+      -f FOLDER, --folder FOLDER
+                            Folder of Apache HTTP log to parse
 
 ## Debugging
 
