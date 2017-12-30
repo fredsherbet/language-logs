@@ -13,11 +13,15 @@ log.setLevel(logging.INFO)
 
 
 class ReportException(Exception):
-    """Exception raised within report.py, with a printable error message"""
+    """Execution exception"""
     def __init__(self, message, log_line=None, exc=None):
         Exception.__init__(self, message)
         self.log_line = log_line
         self.exc = exc
+
+
+class LogInputError(ReportException):
+    """Error parsing the log; the log is malformatted"""
 
 
 class ApacheLogLine():
@@ -51,7 +55,12 @@ class ApacheLogLine():
         try:
             return self.parts[self.NAME_MAP[name]]
         except KeyError:
-            raise AttributeError("{0} has no {1}".format(self, name))
+            raise AttributeError("{} has no {}".format(self, name))
+        except IndexError as exc:
+            raise LogInputError("Log line is malformatted; does not have the "
+                                "expected number of parts",
+                                log_line=self.log_line,
+                                exc=exc)
 
     @property
     def path(self):
@@ -76,8 +85,8 @@ class ApacheLogLine():
                 return datetime.datetime.strptime(self.time.split()[0], fmt)
             except ValueError as exc:
                 pass
-        raise ReportException("Could not parse date " + self.time,
-                              log_line=self.log_line)
+        raise LogInputError("Could not parse date " + self.time,
+                            log_line=self.log_line)
 
     @property
     def month_year(self):
@@ -133,7 +142,7 @@ Non-ascii filenames:
                 self.successful_request_count, self.total_request_count)
 
     def add_log(self, apache_log):
-        non_ascii_file = get_non_ascii_file(apache_log.path)
+        non_ascii_file = self.get_non_ascii_file(apache_log.path)
         self.total_request_count += 1
         if non_ascii_file:
             self.non_ascii_names.append(non_ascii_file)
@@ -141,9 +150,34 @@ Non-ascii filenames:
             return
         self.successful_request_count += 1
         try:
-            self.lang_amounts[get_lang(apache_log.path)] += int(apache_log.bytes)
-        except KeyError:
-            self.lang_amounts[get_lang(apache_log.path)] = int(apache_log.bytes)
+            try:
+                self.lang_amounts[self.get_lang(apache_log.path)] += int(apache_log.bytes)
+            except KeyError:
+                self.lang_amounts[self.get_lang(apache_log.path)] = int(apache_log.bytes)
+        except ValueError as exc:
+            raise LogInputError("Bytes count in HTTP log is not an integer.",
+                                log_line=self.log_line,
+                                exc=exc)
+
+    @staticmethod
+    def get_non_ascii_file(path):
+        filename = path.split('/')[-1]
+        try:
+            filename.decode('ascii')
+        except UnicodeDecodeError:
+            return filename
+
+    @staticmethod
+    def get_lang(path):
+        # Path is expected to be of the following format.
+        #   /<language>/<filename>
+        # e.g. /English/some_audio_file.wav
+        path_parts = path.split('/')
+        if len(path_parts) != 3:
+            # The path isn't the expected format, so we don't know what the
+            # language is.
+            return ''
+        return path_parts[1]
 
 
 def get_full_report(log_file):
@@ -163,42 +197,28 @@ def get_full_report(log_file):
         except ReportException as exc:
             exc.log_line = log_line
             raise
-        except Exception as exc:
+        except Exception:
             logging.exception("Exception handling line: " + log_line)
-            raise ReportException(exc.message, log_line, exc)
+            raise
 
     if report is not None:
         report_str += '\n' + str(report)
     return report_str.strip()
 
 
-def get_non_ascii_file(path):
-    filename = path.split('/')[-1]
-    try:
-        filename.decode('ascii')
-    except UnicodeDecodeError:
-        return filename
-
-
-def get_lang(path):
-    # Path is expected to be of the following format.
-    #   /<language>/<filename>
-    # e.g. /English/some_audio_file.wav
-    path_parts = path.split('/')
-    if len(path_parts) != 3:
-        # The path isn't the expected format, so we don't know what the
-        # language is.
-        return ''
-    return path_parts[1]
-
-
 if __name__ == '__main__':
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("-i", "--input", help="Apache log to parse")
+    # @TODO Briefing:
+    # The script should take a directory as a command line argument and
+    # assume all files within that directory are log files (you may assume
+    # there are no subdirectories).  The Apache Common Log Format is used in
+    # these log files.
+    parser = argparse.ArgumentParser(
+            description="Produce monthly reports for language server from its "
+                        "Apache HTTP logs")
+    parser.add_argument("-i", "--input", help="Apache HTTP log to parse")
     args = parser.parse_args()
 
-    # @TODO by default, send logs to a file
     LOG_FILE = "engineering.log"
     logging.basicConfig(level=logging.INFO,
                         filename=LOG_FILE,
@@ -210,14 +230,17 @@ if __name__ == '__main__':
                 print get_full_report(f)
         else:
             print get_full_report(sys.stdin)
-    except ReportException as exc:
-        logging.exception("Error halted execution")
+    except LogInputError as exc:
+        logging.exception("Failed to parse HTTP log; failed to produce a report.")
+        print "Failed to parse HTTP log; failed to produce a report."
         print exc.message
         if exc.log_line:
             print 'Error handling log line:\n  ' + exc.log_line
+        print "If needed, see further debugging information in " + LOG_FILE
         sys.exit(1)
     except:
-        logging.exception("Error halted execution")
-        print "Report failed. See debugging information in " + LOG_FILE
-        sys.exit(1)
+        logging.exception("Error halted execution; failed to produce a report.")
+        print "Error halted execution; failed to produce a report."
+        print "See debugging information in " + LOG_FILE
+        sys.exit(2)
 
