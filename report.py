@@ -52,16 +52,16 @@ def main():
             print get_full_report(sys.stdin)
     except LogInputError as exc:
         logging.exception("Failed to parse HTTP log; failed to produce a report.")
-        print "Failed to parse HTTP log; failed to produce a report."
-        print exc.message
+        sys.stderr.write("Failed to parse HTTP log; failed to produce a report.")
+        sys.stderr.write(exc.message)
         if exc.log_line:
-            print 'Error handling log line:\n  ' + exc.log_line
-        print "If needed, see further debugging information in " + LOG_FILE
+            sys.stderr.write('Error handling log line:\n  ' + exc.log_line)
+        sys.stderr.write("If needed, see further debugging information in " + LOG_FILE)
         return 1
     except:
         logging.exception("Error halted execution; failed to produce a report.")
-        print "Error halted execution; failed to produce a report."
-        print "See debugging information in " + LOG_FILE
+        sys.stderr.write("Error halted execution; failed to produce a report.")
+        sys.stderr.write("See debugging information in " + LOG_FILE)
         return 2
     return 0
 
