@@ -25,73 +25,80 @@ class LogInputError(ReportException):
     """Error parsing the log; the log is malformatted"""
 
 
-class ApacheLogLine():
-    NAME_MAP = {
-        'ip': 0,
-        'ruser': 1,
-        'luser': 2,
-        'time': 3,
-        'request': 4,
-        'status': 5,
-        'bytes': 6,
-        }
+def main():
+    """Handle command line interface - arguments, logging, and error
+    reporting"""
+    parser = argparse.ArgumentParser(
+            description="Produce monthly reports for language server from its "
+                        "Apache HTTP logs")
+    parser.add_argument("-i", "--input", help="Apache HTTP log to parse")
+    parser.add_argument("-f", "--folder", help="Folder of Apache HTTP log to parse")
+    args = parser.parse_args()
 
-    def __init__(self, log_line):
-        # The apache log is made up of parts, separated by spaces.
-        # Some parts can be multi-word, and so wrapped in quotes.
-        # The shlex.split handles that for us.
-        # There's one wrinkle; the timestamp has spaces, and isn't
-        # wrapped in quotes (it's wrapped in square brackets instead),
-        # so we'll normalise that, here.
-        self.log_line = log_line
-        self.parts = shlex.split(log_line)
-        self.parts[3] += ' ' + self.parts[4]
-        del self.parts[4]
-        self.parts[3] = self.parts[3].strip('[]')
+    LOG_FILE = "engineering.log"
+    logging.basicConfig(level=logging.INFO,
+                        filename=LOG_FILE,
+                        filemode="w")
 
-    def __str__(self):
-        return "AccessLogLine: " + " ".join(self.parts)
+    try:
+        if args.folder:
+            print get_full_report(
+                    file_paths=sorted(os.path.join(args.folder, f)
+                                      for f in os.listdir(args.folder)))
+        elif args.input:
+            with open(args.input) as f:
+                print get_full_report(f)
+        else:
+            print get_full_report(sys.stdin)
+    except LogInputError as exc:
+        logging.exception("Failed to parse HTTP log; failed to produce a report.")
+        print "Failed to parse HTTP log; failed to produce a report."
+        print exc.message
+        if exc.log_line:
+            print 'Error handling log line:\n  ' + exc.log_line
+        print "If needed, see further debugging information in " + LOG_FILE
+        return 1
+    except:
+        logging.exception("Error halted execution; failed to produce a report.")
+        print "Error halted execution; failed to produce a report."
+        print "See debugging information in " + LOG_FILE
+        return 2
+    return 0
 
-    def __getattr__(self, name):
-        try:
-            return self.parts[self.NAME_MAP[name]]
-        except KeyError:
-            raise AttributeError("{} has no {}".format(self, name))
-        except IndexError as exc:
-            raise LogInputError("Log line is malformatted; does not have the "
-                                "expected number of parts",
-                                log_line=self.log_line,
-                                exc=exc)
 
-    @property
-    def path(self):
-        try:
-            return self.request.split()[1].split('?', 1)[0]
-        except:
-            log.warning("Log line has no path. " + self.log_line,
-                        exc_info=True)
-            return ""
+def get_full_report(log_file=None, file_paths=None):
+    def get_files():
+        if log_file:
+            yield log_file
+        if file_paths:
+            for p in file_paths:
+                with open(p) as f:
+                    yield f
 
-    @property
-    def is_successful_request(self):
-        return self.status.startswith('2')
-
-    @property
-    def datetime(self):
-        formats = ['%d/%m/%Y:%H:%M:%S',
-                   '%d/%b/%Y:%H:%M:%S',
-                  ]
-        for fmt in formats:
+    report_str = ''
+    report = None
+    for f in get_files():
+        for log_line in f.readlines():
+            log.debug("Handling line " + log_line)
+            apache_log = ApacheLogLine(log_line)
+            if report is None:
+                report = Report(apache_log.month_year)
+            if apache_log.month_year != report.title:
+                log.info("Formatting report " + report.title)
+                report_str += '\n' + str(report)
+                report = Report(apache_log.month_year)
             try:
-                return datetime.datetime.strptime(self.time.split()[0], fmt)
-            except ValueError as exc:
-                pass
-        raise LogInputError("Could not parse date " + self.time,
-                            log_line=self.log_line)
+                report.add_log(apache_log)
+            except ReportException as exc:
+                exc.log_line = log_line
+                raise
+            except Exception:
+                logging.exception("Exception handling line: " + log_line)
+                raise
 
-    @property
-    def month_year(self):
-        return self.datetime.strftime('%B %Y')
+    if report is not None:
+        report_str += '\n' + str(report)
+    return report_str.strip()
 
 
 class Report():
@@ -181,76 +188,74 @@ Non-ascii filenames:
         return path_parts[1]
 
 
-def get_full_report(log_file=None, file_paths=None):
-    def get_files():
-        if log_file:
-            yield log_file
-        if file_paths:
-            for p in file_paths:
-                with open(p) as f:
-                    yield f
+class ApacheLogLine():
+    NAME_MAP = {
+        'ip': 0,
+        'ruser': 1,
+        'luser': 2,
+        'time': 3,
+        'request': 4,
+        'status': 5,
+        'bytes': 6,
+        }
 
-    report_str = ''
-    report = None
-    for f in get_files():
-        for log_line in f.readlines():
-            log.debug("Handling line " + log_line)
-            apache_log = ApacheLogLine(log_line)
-            if report is None:
-                report = Report(apache_log.month_year)
-            if apache_log.month_year != report.title:
-                log.info("Formatting report " + report.title)
-                report_str += '\n' + str(report)
-                report = Report(apache_log.month_year)
+    def __init__(self, log_line):
+        # The apache log is made up of parts, separated by spaces.
+        # Some parts can be multi-word, and so wrapped in quotes.
+        # The shlex.split handles that for us.
+        # There's one wrinkle; the timestamp has spaces, and isn't
+        # wrapped in quotes (it's wrapped in square brackets instead),
+        # so we'll normalise that, here.
+        self.log_line = log_line
+        self.parts = shlex.split(log_line)
+        self.parts[3] += ' ' + self.parts[4]
+        del self.parts[4]
+        self.parts[3] = self.parts[3].strip('[]')
+
+    def __str__(self):
+        return "AccessLogLine: " + " ".join(self.parts)
+
+    def __getattr__(self, name):
+        try:
+            return self.parts[self.NAME_MAP[name]]
+        except KeyError:
+            raise AttributeError("{} has no {}".format(self, name))
+        except IndexError as exc:
+            raise LogInputError("Log line is malformatted; does not have the "
+                                "expected number of parts",
+                                log_line=self.log_line,
+                                exc=exc)
+
+    @property
+    def path(self):
+        try:
+            return self.request.split()[1].split('?', 1)[0]
+        except:
+            log.warning("Log line has no path. " + self.log_line,
+                        exc_info=True)
+            return ""
+
+    @property
+    def is_successful_request(self):
+        return self.status.startswith('2')
+
+    @property
+    def datetime(self):
+        formats = ['%d/%m/%Y:%H:%M:%S',
+                   '%d/%b/%Y:%H:%M:%S',
+                  ]
+        for fmt in formats:
             try:
-                report.add_log(apache_log)
-            except ReportException as exc:
-                exc.log_line = log_line
-                raise
-            except Exception:
-                logging.exception("Exception handling line: " + log_line)
-                raise
+                return datetime.datetime.strptime(self.time.split()[0], fmt)
+            except ValueError as exc:
+                pass
+        raise LogInputError("Could not parse date " + self.time,
+                            log_line=self.log_line)
 
-    if report is not None:
-        report_str += '\n' + str(report)
-    return report_str.strip()
+    @property
+    def month_year(self):
+        return self.datetime.strftime('%B %Y')
 
 
 if __name__ == '__main__':
-
-    parser = argparse.ArgumentParser(
-            description="Produce monthly reports for language server from its "
-                        "Apache HTTP logs")
-    parser.add_argument("-i", "--input", help="Apache HTTP log to parse")
-    parser.add_argument("-f", "--folder", help="Folder of Apache HTTP log to parse")
-    args = parser.parse_args()
-
-    LOG_FILE = "engineering.log"
-    logging.basicConfig(level=logging.INFO,
-                        filename=LOG_FILE,
-                        filemode="w")
-
-    try:
-        if args.folder:
-            print get_full_report(
-                    file_paths=sorted(os.path.join(args.folder, f)
-                                      for f in os.listdir(args.folder)))
-        elif args.input:
-            with open(args.input) as f:
-                print get_full_report(f)
-        else:
-            print get_full_report(sys.stdin)
-    except LogInputError as exc:
-        logging.exception("Failed to parse HTTP log; failed to produce a report.")
-        print "Failed to parse HTTP log; failed to produce a report."
-        print exc.message
-        if exc.log_line:
-            print 'Error handling log line:\n  ' + exc.log_line
-        print "If needed, see further debugging information in " + LOG_FILE
-        sys.exit(1)
-    except:
-        logging.exception("Error halted execution; failed to produce a report.")
-        print "Error halted execution; failed to produce a report."
-        print "See debugging information in " + LOG_FILE
-        sys.exit(2)
-
+    sys.exit(main())
